@@ -40,6 +40,20 @@ http://localhost:8000/
 
 If the browser prompts for Bluetooth or location permissions, allow them.
 
+## Diagnostics
+
+Add `?debug=1` to the URL and a diagnostics panel appears under the device list. It reports what
+the browser actually exposes — secure context, whether `requestLEScan` and `watchAdvertisements`
+are present (i.e. whether the experimental flag is really on), Bluetooth availability, how many
+advertisements each acquisition path has received, and the last raw error before it was turned
+into friendly copy.
+
+**Copy diagnostics** puts the whole panel on the clipboard as plain text, which is the only
+practical way to get this off a phone. If the browser refuses clipboard access, the text appears
+in a selectable box instead.
+
+Without `?debug=1` the panel is not rendered and nothing about the app changes.
+
 ## Notes
 
 - Opening the page directly from disk is likely to fail because Web Bluetooth requires a secure context.

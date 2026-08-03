@@ -40,6 +40,16 @@
   <div class="empty" id="empty">Nothing yet.</div>
 
   <div class="note" id="support"></div>
+
+  <!-- ============ ?debug=1 DIAGNOSTICS ============ -->
+  <!-- Deliberately not class="view" — swap() strips .active from every .view. -->
+  <section id="debug" hidden>
+    <div class="eyebrow">Diagnostics</div>
+    <div id="dbgRows"></div>
+    <button id="btnCopyDiag" class="quiet">Copy diagnostics</button>
+    <textarea id="dbgText" class="mono" readonly hidden rows="10"
+              aria-label="Diagnostics text"></textarea>
+  </section>
 </section>
 
 <!-- ============ VIEW: HUNT ============ -->
