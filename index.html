@@ -66,6 +66,21 @@ button.quiet{border-color:var(--hairline);color:var(--muted)}
 button.quiet:active{background:var(--hairline);color:var(--bone)}
 .btn-row{display:grid;gap:10px;margin-bottom:18px}
 
+/* ---------- filter ---------- */
+.filter{display:flex;gap:8px;margin-bottom:10px}
+.filter input{
+  flex:1;min-width:0;
+  font-family:"IBM Plex Mono",monospace;font-size:15px;
+  background:var(--panel);color:var(--bone);
+  border:1px solid var(--hairline);border-radius:2px;
+  padding:13px 12px;
+}
+.filter input::placeholder{color:var(--muted);font-family:"Barlow Condensed",sans-serif;letter-spacing:.04em}
+.filter input:focus{outline:none;border-color:var(--amber)}
+button.chip{width:auto;flex:0 0 auto;padding:13px 14px;font-size:12px}
+button.chip[aria-pressed="true"]{background:var(--amber);color:var(--ink);border-color:var(--amber)}
+.count{margin-bottom:10px;min-height:14px}
+
 /* ---------- device list ---------- */
 .hint{color:var(--muted);font-size:15px;margin:0 0 18px}
 #list{list-style:none;margin:0;padding:0}
@@ -154,11 +169,20 @@ code{font-family:"IBM Plex Mono",monospace;font-size:12.5px;color:var(--amber);w
 
   <div class="btn-row">
     <button id="btnScan">Start scan</button>
-    <button id="btnPick" class="quiet">Pick one device instead</button>
+    <button id="btnPick" class="quiet">Add a device by hand</button>
   </div>
 
+  <div class="eyebrow" id="diag"></div>
+
+  <div class="filter">
+    <input id="q" type="search" inputmode="search" autocomplete="off"
+           placeholder="Filter by name or id" aria-label="Filter devices by name or id">
+    <button id="btnNamed" class="quiet chip" aria-pressed="false">Named only</button>
+  </div>
+  <div class="eyebrow count" id="count"></div>
+
   <ul id="list"></ul>
-  <div class="empty" id="empty">Nothing heard yet.</div>
+  <div class="empty" id="empty">Nothing on the list yet. Scan, or add a device by hand.</div>
 
   <div class="note" id="support"></div>
 </section>
@@ -234,7 +258,11 @@ const S = {
   sound: true,
   buzz: true,
   wakeLock: null,
-  watchAbort: null
+  watched: new Set(),
+  filter: "",
+  namedOnly: false,
+  advCount: 0,
+  watchdog: null
 };
 
 const ALPHA = 0.25;          // EMA smoothing
@@ -279,11 +307,11 @@ async function checkSupport(){
   if(!navigator.bluetooth.requestLEScan){
     box.innerHTML = "<b>Full scanning is switched off in this Chrome.</b> Turn it on at " +
       "<code>chrome://flags/#enable-experimental-web-platform-features</code>, then restart Chrome. " +
-      "Until then, use <b>Pick one device</b> — it still gives live signal strength.";
+      "Until then, use <b>Add a device by hand</b> — pick devices one at a time and they stack up on the list with live signal.";
     $("btnScan").disabled = true;
   } else {
     box.innerHTML = "<b>Two ways in.</b> <i>Start scan</i> hears every advertisement in range. " +
-      "<i>Pick one device</i> uses Chrome's own picker and needs no flags — better if scanning is blocked.";
+      "<i>Add a device by hand</i> uses Chrome's own picker and needs no flags — better if scanning is blocked.";
   }
 }
 
@@ -292,6 +320,8 @@ async function checkSupport(){
    ============================================================ */
 async function startScan(){
   try{
+    S.advCount = 0;
+    diag("Requesting scan permission…");
     setStatus("Scanning", true);
     navigator.bluetooth.addEventListener("advertisementreceived", onAdvert);
     S.scan = await navigator.bluetooth.requestLEScan({
@@ -300,13 +330,37 @@ async function startScan(){
     });
     $("btnScan").textContent = "Stop scan";
     $("hint").textContent = "Listening. Devices sort by strength, strongest first.";
+    diag("Scan running · 0 advertisements");
+
+    // If the radio is scanning but nothing arrives, it's almost always location permission.
+    clearTimeout(S.watchdog);
+    S.watchdog = setTimeout(() => {
+      if(S.scan && S.advCount === 0){
+        $("hint").innerHTML = "<b>Scan started but nothing is coming through.</b> " +
+          "Android hides Bluetooth advertisements from Chrome unless Chrome has Location " +
+          "permission. Open Android Settings → Apps → Chrome → Permissions → Location → " +
+          "Allow, make sure Location itself is switched on, then reload and scan again.";
+      }
+    }, 7000);
+
   }catch(err){
-    setStatus("Idle", false);
-    $("hint").textContent = "Scan didn't start: " + err.message;
+    stopScan();
+    const map = {
+      NotAllowedError: "Permission was refused. Tap Start scan and choose Allow on the prompt.",
+      NotSupportedError: "This Chrome build can't scan. Enable chrome://flags/#enable-experimental-web-platform-features and restart Chrome.",
+      NotFoundError: "No Bluetooth adapter found. Switch Bluetooth on and reload.",
+      InvalidStateError: "A scan is already running in another tab. Close it and try again.",
+      SecurityError: "Blocked by the page's permissions policy — open this file as a top-level page in Chrome, not inside another app."
+    };
+    $("hint").textContent = map[err.name] || (err.name + ": " + err.message);
+    diag("Scan failed · " + err.name);
   }
 }
 
+function diag(t){ $("diag").textContent = t; }
+
 function stopScan(){
+  clearTimeout(S.watchdog);
   if(S.scan){ try{ S.scan.stop(); }catch(e){} S.scan = null; }
   navigator.bluetooth.removeEventListener("advertisementreceived", onAdvert);
   $("btnScan").textContent = "Start scan";
@@ -317,6 +371,9 @@ function onAdvert(e){
   const id = e.device.id;
   const rssi = e.rssi;
   if(typeof rssi !== "number") return;
+
+  S.advCount++;
+  if(S.scan && S.advCount % 5 === 1) diag(`Scan running · ${S.advCount} advertisements`);
 
   let d = S.devices.get(id);
   if(!d){
@@ -333,19 +390,30 @@ function onAdvert(e){
   if($("viewList").classList.contains("active")) renderList();
 }
 
-/* Single-device fallback: Chrome's picker + watchAdvertisements */
+/* Flag-free path: Chrome's picker, one device at a time, all kept on the list */
 async function pickOne(){
   try{
     const device = await navigator.bluetooth.requestDevice({
       acceptAllDevices: true, optionalServices: []
     });
+
+    if(S.watched.has(device.id)){
+      $("hint").textContent = "That one's already on the list.";
+      return;
+    }
     if(!device.watchAdvertisements){
       $("hint").textContent = "This Chrome can't stream signal strength. Enable " +
         "chrome://flags/#enable-experimental-web-platform-features and try again.";
       return;
     }
-    const rec = { id: device.id, name: device.name || "", rssi: null, ema: null, txPower: null, last: 0 };
+
+    const rec = {
+      id: device.id, name: device.name || "", rssi: null, ema: null,
+      txPower: null, last: 0, pinned: true
+    };
     S.devices.set(device.id, rec);
+    S.watched.add(device.id);
+    renderList();
 
     device.addEventListener("advertisementreceived", ev => {
       if(typeof ev.rssi !== "number") return;
@@ -357,12 +425,14 @@ async function pickOne(){
       if($("viewList").classList.contains("active")) renderList();
     });
 
-    S.watchAbort = new AbortController();
-    await device.watchAdvertisements({ signal: S.watchAbort.signal });
-    setStatus("Watching", true);
-    hunt(device.id);
+    await device.watchAdvertisements();
+    setStatus(`Watching ${S.watched.size}`, true);
+    $("hint").textContent = S.watched.size === 1
+      ? "Added. Add more devices, or tap one to start hunting it."
+      : `Watching ${S.watched.size} devices. Tap one to start hunting it.`;
   }catch(err){
-    if(err.name !== "NotFoundError") $("hint").textContent = "Couldn't watch that device: " + err.message;
+    if(err.name === "NotFoundError") return;          // user dismissed the picker
+    $("hint").textContent = "Couldn't watch that device: " + err.message;
   }
 }
 
@@ -371,26 +441,50 @@ async function pickOne(){
    ============================================================ */
 function renderList(){
   const now = Date.now();
-  for(const [id,d] of S.devices) if(now - d.last > 12000 && id !== S.target) S.devices.delete(id);
+  for(const [id,d] of S.devices){
+    if(!d.pinned && id !== S.target && now - d.last > 12000) S.devices.delete(id);
+  }
 
-  const arr = [...S.devices.values()].filter(d => d.ema != null).sort((a,b) => b.ema - a.ema);
+  const arr = [...S.devices.values()].sort((a,b) => {
+    if(a.ema == null) return 1;
+    if(b.ema == null) return -1;
+    return b.ema - a.ema;
+  });
+
+  const q = S.filter.trim().toLowerCase();
+  const shown = arr.filter(d => {
+    if(S.namedOnly && !d.name) return false;
+    if(!q) return true;
+    return d.name.toLowerCase().includes(q) || d.id.toLowerCase().includes(q);
+  });
+
+  $("count").textContent = (q || S.namedOnly)
+    ? `${shown.length} of ${arr.length} shown`
+    : (arr.length ? `${arr.length} device${arr.length === 1 ? "" : "s"}` : "");
+
   const ul = $("list");
-  $("empty").style.display = arr.length ? "none" : "block";
+  $("empty").style.display = shown.length ? "none" : "block";
+  $("empty").textContent = arr.length
+    ? "No device matches that filter."
+    : "Nothing on the list yet. Scan, or add a device by hand.";
 
-  ul.innerHTML = arr.map(d => {
-    const lit = Math.max(0, Math.min(10, Math.round(pct(d.ema) * 10)));
+  ul.innerHTML = shown.map(d => {
+    const silent = d.ema == null || now - d.last > 12000;
+    const lit = silent ? 0 : Math.max(0, Math.min(10, Math.round(pct(d.ema) * 10)));
     const segs = Array.from({length:10}, (_,i) =>
       `<span class="seg${i < lit ? " lit" : ""}"></span>`).join("");
-    const name = d.name
-      ? esc(d.name)
-      : `<span class="anon">Unnamed device</span>`;
+    const name = d.name ? esc(d.name) : `<span class="anon">Unnamed device</span>`;
+    const dbm  = silent ? "—" : `${Math.round(d.ema)} dBm`;
+    const meta = d.ema == null
+      ? "waiting for first signal"
+      : silent ? "gone quiet" : `${roughDistance(d.ema, d.txPower)} away`;
     return `<li data-id="${esc(d.id)}">
       <div class="row-top">
         <span class="dev-name">${name}</span>
-        <span class="dbm mono">${Math.round(d.ema)} dBm</span>
+        <span class="dbm mono">${dbm}</span>
       </div>
       <div class="segs">${segs}</div>
-      <div class="row-meta">${roughDistance(d.ema, d.txPower)} away · ${esc(d.id).slice(0,8)}</div>
+      <div class="row-meta">${meta} · ${esc(d.id).slice(0,10)}</div>
     </li>`;
   }).join("");
 }
@@ -589,6 +683,13 @@ function releaseWake(){ if(S.wakeLock){ S.wakeLock.release().catch(()=>{}); S.wa
    ============================================================ */
 $("btnScan").addEventListener("click", () => S.scan ? stopScan() : startScan());
 $("btnPick").addEventListener("click", pickOne);
+
+$("q").addEventListener("input", e => { S.filter = e.target.value; renderList(); });
+$("btnNamed").addEventListener("click", e => {
+  S.namedOnly = !S.namedOnly;
+  e.currentTarget.setAttribute("aria-pressed", String(S.namedOnly));
+  renderList();
+});
 $("btnBack").addEventListener("click", leaveHunt);
 
 $("btnSound").addEventListener("click", e => {
