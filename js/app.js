@@ -185,12 +185,19 @@ function onAdvert(e){
   if($("viewList").classList.contains("active")) renderList();
 }
 
-/* Flag-free path: Chrome's picker, one device at a time, all kept on the list */
+/* Flag-free path: Chrome's picker, one device at a time, all kept on the list.
+   Chrome's picker has no search box of its own, so feed the filter box into it.
+   The API only matches a name *prefix* here — no substring, no id — so the picker
+   is narrower than the list filter, and unnamed devices drop out entirely. */
 async function pickOne(){
+  const q = S.filter.trim();
+  // Set before the dialog opens, so an empty picker reads as "my filter did that".
+  if(q) $("hint").textContent = `Picker is showing names starting with "${q}".`;
   try{
-    const device = await navigator.bluetooth.requestDevice({
-      acceptAllDevices: true, optionalServices: []
-    });
+    const device = await navigator.bluetooth.requestDevice(
+      q ? { filters: [{ namePrefix: q }], optionalServices: [] }
+        : { acceptAllDevices: true, optionalServices: [] }
+    );
 
     if(S.watched.has(device.id)){
       $("hint").textContent = "Already on the list.";
@@ -348,7 +355,7 @@ function paintHunt(txPower){
 
   $("glow").style.opacity = (p * p).toFixed(2);
   $("rssiVal").textContent = Math.round(v);
-  $("distVal").textContent = "roughly " + roughDistance(v, txPower) + " away";
+  $("distVal").textContent = roughDistance(v, txPower) + " away";
 
   // warmer / colder from the slope of the smoothed line
   const now = Date.now();
