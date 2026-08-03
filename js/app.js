@@ -33,10 +33,10 @@ const SCAN_PERMISSION_TIMEOUT = 20000; // ms to wait for requestLEScan() to sett
 
 const $ = id => document.getElementById(id);
 
-/* Chrome exposes requestLEScan behind the experimental flag on every platform, but only
-   ChromeOS and Android actually implement scanning. On Windows the backend still rides on
-   Windows 8 APIs that have no scan support, so the call prompts for permission and then
-   never settles. Detect the platform so the copy can say that instead of hanging silently. */
+/* Chromium implements advertisement scanning on every platform, but it stays behind the
+   experimental flag everywhere and we have only ever got it working on Android — on our
+   Windows machine the scan starts and then no advertisements arrive, cause unknown.
+   Detect the platform so the copy can set expectations instead of hanging silently. */
 function platformName(){
   const p = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "";
   const ua = navigator.userAgent || "";
@@ -85,7 +85,7 @@ async function checkSupport(){
     box.textContent = "Scanning isn't available here — add a device by hand instead.";
   } else if(!scanningActuallyWorks()){
     S.scanLabel = "Start scan";
-    box.textContent = "Scanning only works on Android. Here, add a device by hand.";
+    box.textContent = "Scanning often fails on desktop. If nothing shows, add a device by hand.";
   } else {
     S.scanLabel = "Start scan";
     box.textContent = "Scan hears everything nearby. Add by hand picks one device.";
@@ -136,7 +136,7 @@ async function startScan(){
     S.watchdog = setTimeout(() => {
       if(S.scan && S.advCount === 0){
         $("hint").textContent = scanningActuallyWorks()
-          ? "Nothing coming through. Give Chrome Location permission in Android settings, then scan again."
+          ? "Nothing coming through. Allow Nearby devices for Chrome (Location, on Android 11 and older), then scan again."
           : "Nothing coming through. Add a device by hand instead.";
       }
     }, 7000);
@@ -146,7 +146,11 @@ async function startScan(){
     const map = {
       NotAllowedError: "Permission refused. Tap Start scan and choose Allow.",
       NotSupportedError: "This Chrome build can't scan. Add a device by hand instead.",
-      NotFoundError: "No Bluetooth adapter. Switch Bluetooth on and reload.",
+      // On Android a missing Nearby-devices permission lands here, with no prompt ever shown.
+      // The picker does run the OS permission flow, so it doubles as the fix.
+      NotFoundError: platformName() === "android"
+        ? "No Bluetooth. Switch it on — or tap Add a device by hand, which asks for the Nearby devices permission."
+        : "No Bluetooth adapter. Switch Bluetooth on and reload.",
       InvalidStateError: "A scan is already running in another tab.",
       SecurityError: "Blocked. Open this page directly in Chrome.",
       PermissionTimeout: "The scan never started. Add a device by hand instead."
