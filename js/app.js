@@ -18,9 +18,16 @@ const S = {
   watched: new Set(),
   filter: "",
   namedOnly: false,
-  advCount: 0,
+  advCount: 0,          // scan-path adverts since this scan started; drives the 7s watchdog
   watchdog: null,
-  scanLabel: "Start scan"   // restored by stopScan(); set by checkSupport()
+  scanLabel: "Start scan",  // restored by stopScan(); set by checkSupport()
+
+  // Diagnostics only, read by the ?debug=1 panel. The totals are monotonic so a pasted
+  // report stays honest across several scan attempts, unlike advCount which resets.
+  scanAdvTotal: 0,
+  pickAdvTotal: 0,
+  btAvailable: null,    // last getAvailability() result, cached by checkSupport()
+  lastError: null       // {where,name,message,at} — the raw failure, before friendly copy
 };
 
 const ALPHA = 0.25;          // EMA smoothing
@@ -29,7 +36,13 @@ const PATH_LOSS = 2.0;
 const RSSI_MIN = -100, RSSI_MAX = -35;
 const TREND_WINDOW = 2500;   // ms to look back for warmer/colder
 const TREND_DEADBAND = 1.5;  // dB
-const SCAN_PERMISSION_TIMEOUT = 20000; // ms to wait for requestLEScan() to settle
+/* With acceptAllAdvertisements the requestLEScan() promise is *designed* not to settle until
+   the user answers the permission prompt, so this timer cannot tell a slow tap from a real
+   hang. Keep it long enough that only a genuine hang trips it. */
+const SCAN_PERMISSION_TIMEOUT = 60000; // ms to wait for requestLEScan() to settle
+
+// ?debug or ?debug=1 reveals the diagnostics panel. Off, nothing below it runs.
+const DEBUG = new URLSearchParams(location.search).has("debug");
 
 const $ = id => document.getElementById(id);
 
@@ -73,11 +86,12 @@ async function checkSupport(){
   }
   if(navigator.bluetooth.getAvailability){
     try{
-      if(!(await navigator.bluetooth.getAvailability())){
+      S.btAvailable = await navigator.bluetooth.getAvailability();
+      if(!S.btAvailable){
         blocked("Bluetooth is off. Switch it on and reload.");
         return;
       }
-    }catch(e){}
+    }catch(e){ noteError("availability", e); }
   }
 
   if(!navigator.bluetooth.requestLEScan){
@@ -112,9 +126,9 @@ async function startScan(){
     $("hint").textContent = "Waiting for permission…";
     setStatus("Scanning", true);
     navigator.bluetooth.addEventListener("advertisementreceived", onAdvert);
-    // requestLEScan() can hang indefinitely on desktop Chrome (Windows/macOS/Linux) even after
-    // the user grants permission — the API is only solid on ChromeOS/Android. Race it against a
-    // timeout so the UI never gets stuck on "Requesting scan permission…" forever.
+    // We have seen requestLEScan() sit unsettled on desktop Chrome after the user granted
+    // permission. Whether that was a real hang or our own timer firing on a slow tap is not
+    // settled (see docs/research/). Race it so the UI can never stick on "Waiting…" forever.
     const pending = navigator.bluetooth.requestLEScan({
       acceptAllAdvertisements: true,
       keepRepeatedDevices: true
@@ -130,8 +144,8 @@ async function startScan(){
     $("btnScan").textContent = "Stop scan";
     $("hint").textContent = "Listening. Strongest first.";
 
-    // Scan handle in hand but no adverts: on Android that's the Location permission, on
-    // desktop it's the platform gap that no setting can fix.
+    // Scan handle in hand but no adverts: on Android that's a missing permission. On desktop
+    // the cause is unknown — Chromium implements delivery there, it just hasn't worked for us.
     clearTimeout(S.watchdog);
     S.watchdog = setTimeout(() => {
       if(S.scan && S.advCount === 0){
@@ -142,6 +156,7 @@ async function startScan(){
     }, 7000);
 
   }catch(err){
+    noteError("scan", err);
     stopScan();
     const map = {
       NotAllowedError: "Permission refused. Tap Start scan and choose Allow.",
@@ -173,6 +188,7 @@ function onAdvert(e){
   if(typeof rssi !== "number") return;
 
   S.advCount++;
+  S.scanAdvTotal++;
 
   let d = S.devices.get(id);
   if(!d){
@@ -222,6 +238,7 @@ async function pickOne(){
 
     device.addEventListener("advertisementreceived", ev => {
       if(typeof ev.rssi !== "number") return;
+      S.pickAdvTotal++;
       rec.rssi = ev.rssi;
       rec.ema = rec.ema == null ? ev.rssi : rec.ema + ALPHA * (ev.rssi - rec.ema);
       if(typeof ev.txPower === "number") rec.txPower = ev.txPower;
@@ -234,6 +251,7 @@ async function pickOne(){
     setStatus(`Watching ${S.watched.size}`, true);
     $("hint").textContent = "Tap a device to start hunting it.";
   }catch(err){
+    noteError("picker", err);                         // recorded before the dismissal shortcut
     if(err.name === "NotFoundError") return;          // user dismissed the picker
     $("hint").textContent = "Couldn't watch that device.";
   }
@@ -488,10 +506,62 @@ function setStatus(text, on){
   $("statusText").textContent = text;
   $("lamp").classList.toggle("on", !!on);
 }
+/* Both failure paths map err.name to friendly copy and throw the rest away, which is exactly
+   what diagnosis needs. Keep the raw pair. Tolerates the PermissionTimeout rejection, which is
+   a bare {name} object rather than an Error. */
+function noteError(where, err){
+  S.lastError = {
+    where,
+    name: (err && err.name) || "Error",
+    message: (err && err.message) || "",
+    at: Date.now()
+  };
+  if(DEBUG) renderDiag();
+}
+
 async function requestWake(){
   try{ if("wakeLock" in navigator) S.wakeLock = await navigator.wakeLock.request("screen"); }catch(e){}
 }
 function releaseWake(){ if(S.wakeLock){ S.wakeLock.release().catch(()=>{}); S.wakeLock = null; } }
+
+/* ============================================================
+   Diagnostics (?debug=1)
+
+   Every field here answers a question the source alone can't: which flag state the browser is
+   really in, whether either acquisition path ever delivered an advertisement, and what the
+   failure actually was before it became friendly copy. Phones make console output unreadable,
+   so the panel exists to be copied and pasted somewhere useful.
+   ============================================================ */
+
+/* One source of truth for both the rendered rows and the clipboard text. */
+function diagLines(){
+  const bt = navigator.bluetooth;
+  const e = S.lastError;
+  return [
+    ["page", location.origin + location.pathname],
+    ["secure ctx", `${window.isSecureContext} top=${window.self === window.top}`],
+    ["platform", `${platformName()} scanOk=${scanningActuallyWorks()}`],
+    ["ua", navigator.userAgent || "?"],
+    ["bluetooth", String(!!bt)],
+    ["requestLEScan", bt ? String("requestLEScan" in bt) : "n/a"],
+    // Open question 4: with the flag off this must read false, since
+    // WebBluetoothWatchAdvertisements is experimental.
+    ["watchAdverts", typeof BluetoothDevice === "undefined"
+      ? "no BluetoothDevice"
+      : String("watchAdvertisements" in BluetoothDevice.prototype)],
+    ["availability", String(S.btAvailable)],
+    ["scan", `${S.scan ? "running" : "idle"} timeout=${SCAN_PERMISSION_TIMEOUT}ms`],
+    ["adverts", `scan=${S.scanAdvTotal} picker=${S.pickAdvTotal}`],
+    ["devices", `seen=${S.devices.size} watched=${S.watched.size}`],
+    ["last error", e ? `${e.where}: ${e.name}: ${e.message}` : "none"]
+  ];
+}
+
+function renderDiag(){
+  $("dbgRows").innerHTML = diagLines().map(([k, v]) =>
+    `<div class="dbg-row"><span class="eyebrow">${esc(k)}</span><code>${esc(v)}</code></div>`
+  ).join("");
+}
 
 /* ============================================================
    Wiring
@@ -519,6 +589,24 @@ $("btnBuzz").addEventListener("click", e => {
   e.currentTarget.textContent = S.buzz ? "Buzz on" : "Buzz off";
 });
 
+/* The whole point of the panel: one tap on a phone, then paste. Clipboard access can be
+   refused, so fall back to a pre-selected textarea the user can long-press to copy. */
+$("btnCopyDiag").addEventListener("click", async e => {
+  const btn = e.currentTarget;
+  const text = diagLines().map(([k, v]) => `${k}: ${v}`).join("\n");
+  $("dbgText").value = text;
+  try{
+    await navigator.clipboard.writeText(text);
+    btn.textContent = "Copied";
+    setTimeout(() => { btn.textContent = "Copy diagnostics"; }, 2000);
+  }catch(err){
+    $("dbgText").hidden = false;
+    $("dbgText").focus();
+    $("dbgText").select();
+    btn.textContent = "Copy blocked — select the text below";
+  }
+});
+
 document.addEventListener("visibilitychange", () => {
   if(document.hidden) stopTick();
   else if(S.target != null){ scheduleTick(); requestWake(); }
@@ -541,4 +629,15 @@ window.addEventListener("resize", drawTrace);
 })();
 
 checkSupport();
-setInterval(() => { if($("viewList").classList.contains("active")) renderList(); }, 1500);
+
+// checkSupport() is async and un-awaited, so availability reads null here and corrects on the
+// first interval tick below.
+if(DEBUG){
+  $("debug").hidden = false;
+  renderDiag();
+}
+
+setInterval(() => {
+  if($("viewList").classList.contains("active")) renderList();
+  if(DEBUG) renderDiag();
+}, 1500);

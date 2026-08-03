@@ -138,6 +138,23 @@ canvas#trace{width:100%;height:74px;display:block;background:var(--panel);border
 .note b{color:var(--bone);font-weight:600}
 code{font-family:"IBM Plex Mono",monospace;font-size:12.5px;color:var(--amber);word-break:break-all}
 
+/* ?debug=1 diagnostics panel. Nothing here paints unless #debug loses its hidden attribute. */
+[hidden]{display:none !important}
+#debug{border-top:1px solid var(--hairline);margin-top:22px;padding-top:14px}
+#debug > .eyebrow{margin-bottom:10px}
+.dbg-row{
+  display:flex;gap:10px;align-items:baseline;
+  padding:4px 0;border-bottom:1px solid var(--hairline);
+}
+.dbg-row .eyebrow{flex:0 0 104px;white-space:nowrap}
+.dbg-row code{flex:1 1 auto;font-size:12px}
+#btnCopyDiag{margin-top:12px}
+#dbgText{
+  width:100%;margin-top:10px;padding:10px;font-size:12px;
+  background:var(--panel);color:var(--bone);
+  border:1px solid var(--hairline);border-radius:2px;
+}
+
 @media (prefers-reduced-motion:reduce){
   .needle,.arc-fill,.glow{transition:none}
 }
