@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#10131A">
+<title>Field Meter — Bluetooth signal finder</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#10131A;
+  --panel:#1A1F29;
+  --hairline:#2C3340;
+  --bone:#EDE6D6;
+  --muted:#7E8798;
+  --amber:#F0A639;
+  --rust:#C4553F;
+  --pad:16px;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%}
+body{
+  background:var(--ink);
+  color:var(--bone);
+  font-family:"Barlow Condensed",system-ui,sans-serif;
+  font-size:17px;
+  line-height:1.35;
+  overscroll-behavior:none;
+  padding-bottom:env(safe-area-inset-bottom);
+}
+.eyebrow{
+  font-size:11px;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--muted);font-weight:600;
+}
+.mono{font-family:"IBM Plex Mono",ui-monospace,monospace}
+
+/* ---------- chrome ---------- */
+header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:calc(env(safe-area-inset-top) + 14px) var(--pad) 12px;
+  border-bottom:1px solid var(--hairline);
+  position:sticky;top:0;background:var(--ink);z-index:5;
+}
+header h1{margin:0;font-size:20px;font-weight:600;letter-spacing:.06em;text-transform:uppercase}
+.status{display:flex;align-items:center;gap:7px}
+.lamp{width:8px;height:8px;border-radius:50%;background:var(--hairline)}
+.lamp.on{background:var(--amber);box-shadow:0 0 8px var(--amber)}
+
+main{padding:var(--pad);max-width:560px;margin:0 auto}
+.view{display:none}
+.view.active{display:block}
+
+/* ---------- buttons ---------- */
+button{
+  font-family:inherit;font-size:15px;font-weight:600;
+  letter-spacing:.14em;text-transform:uppercase;
+  border:1px solid var(--amber);border-radius:2px;
+  background:transparent;color:var(--amber);
+  padding:15px 18px;width:100%;cursor:pointer;
+}
+button:active{background:var(--amber);color:var(--ink)}
+button:focus-visible{outline:2px solid var(--bone);outline-offset:3px}
+button.quiet{border-color:var(--hairline);color:var(--muted)}
+button.quiet:active{background:var(--hairline);color:var(--bone)}
+.btn-row{display:grid;gap:10px;margin-bottom:18px}
+
+/* ---------- device list ---------- */
+.hint{color:var(--muted);font-size:15px;margin:0 0 18px}
+#list{list-style:none;margin:0;padding:0}
+#list li{
+  border-bottom:1px solid var(--hairline);
+  padding:14px 2px;display:grid;gap:8px;cursor:pointer;
+}
+#list li:active{background:var(--panel)}
+.row-top{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.dev-name{font-size:19px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dev-name.anon{color:var(--muted)}
+.dbm{font-size:15px;color:var(--amber);white-space:nowrap}
+.segs{display:flex;gap:3px;height:9px}
+.seg{flex:1;background:var(--hairline);border-radius:1px}
+.seg.lit{background:var(--amber)}
+.row-meta{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.empty{color:var(--muted);text-align:center;padding:44px 0;font-size:15px}
+
+/* ---------- hunt gauge (signature) ---------- */
+.gauge-wrap{position:relative;margin:6px 0 4px;text-align:center}
+.glow{
+  position:absolute;left:50%;bottom:6px;width:190px;height:190px;
+  transform:translateX(-50%);border-radius:50%;pointer-events:none;
+  background:radial-gradient(circle,rgba(240,166,57,.30) 0%,transparent 62%);
+  opacity:0;transition:opacity .5s linear;
+}
+svg.gauge{width:100%;max-width:400px;height:auto;display:block;margin:0 auto;position:relative}
+.tick{stroke:var(--hairline);stroke-width:2}
+.tick.major{stroke:var(--muted)}
+.arc-bg{fill:none;stroke:var(--panel);stroke-width:12}
+.arc-fill{fill:none;stroke:var(--amber);stroke-width:12;transition:stroke-dashoffset .45s ease-out}
+.needle{stroke:var(--bone);stroke-width:2.5;stroke-linecap:round;transform-origin:200px 168px;transition:transform .45s ease-out}
+.pivot{fill:var(--bone)}
+.scale-label{fill:var(--muted);font-family:"IBM Plex Mono",monospace;font-size:13px}
+
+.readout{text-align:center;margin:2px 0 20px}
+.readout .big{font-size:52px;font-weight:600;letter-spacing:-.02em;line-height:1}
+.readout .unit{font-size:20px;color:var(--muted);margin-left:4px}
+.readout .sub{margin-top:6px;font-size:13px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+
+.verdict{
+  border:1px solid var(--hairline);border-radius:2px;
+  padding:18px;text-align:center;margin-bottom:18px;
+  transition:border-color .3s,background .3s;
+}
+.verdict .word{font-size:34px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;line-height:1}
+.verdict .why{font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-top:7px}
+.verdict.warmer{border-color:var(--amber);background:rgba(240,166,57,.08)}
+.verdict.warmer .word{color:var(--amber)}
+.verdict.colder{border-color:var(--rust)}
+.verdict.colder .word{color:var(--rust)}
+
+canvas#trace{width:100%;height:74px;display:block;background:var(--panel);border-radius:2px}
+.trace-cap{display:flex;justify-content:space-between;margin:6px 0 20px}
+
+.target{border-bottom:1px solid var(--hairline);padding-bottom:12px;margin-bottom:16px}
+.target .name{font-size:24px;font-weight:500}
+.toggles{display:flex;gap:10px;margin-bottom:18px}
+.toggles button{flex:1;font-size:12px;padding:12px 4px}
+.toggles button[aria-pressed="true"]{background:var(--amber);color:var(--ink)}
+
+.note{
+  border-left:2px solid var(--hairline);padding-left:12px;
+  color:var(--muted);font-size:14px;margin:22px 0 8px;
+}
+.note b{color:var(--bone);font-weight:600}
+code{font-family:"IBM Plex Mono",monospace;font-size:12.5px;color:var(--amber);word-break:break-all}
+
+@media (prefers-reduced-motion:reduce){
+  .needle,.arc-fill,.glow{transition:none}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Field Meter</h1>
+  <div class="status"><span class="lamp" id="lamp"></span><span class="eyebrow" id="statusText">Idle</span></div>
+</header>
+
+<main>
+
+<!-- ============ VIEW: LIST ============ -->
+<section class="view active" id="viewList">
+  <p class="hint" id="hint">Scan picks up anything broadcasting nearby. Tap a device to start hunting it.</p>
+
+  <div class="btn-row">
+    <button id="btnScan">Start scan</button>
+    <button id="btnPick" class="quiet">Pick one device instead</button>
+  </div>
+
+  <ul id="list"></ul>
+  <div class="empty" id="empty">Nothing heard yet.</div>
+
+  <div class="note" id="support"></div>
+</section>
+
+<!-- ============ VIEW: HUNT ============ -->
+<section class="view" id="viewHunt">
+  <div class="target">
+    <div class="eyebrow">Hunting</div>
+    <div class="name" id="targetName">—</div>
+  </div>
+
+  <div class="gauge-wrap">
+    <div class="glow" id="glow"></div>
+    <svg class="gauge" viewBox="0 0 400 190" role="img" aria-label="Signal strength meter">
+      <path class="arc-bg" d="M 40 168 A 160 160 0 0 1 360 168"/>
+      <path class="arc-fill" id="arcFill" d="M 40 168 A 160 160 0 0 1 360 168"/>
+      <g id="ticks"></g>
+      <text class="scale-label" x="34" y="186" text-anchor="start">far</text>
+      <text class="scale-label" x="366" y="186" text-anchor="end">here</text>
+      <line class="needle" id="needle" x1="200" y1="168" x2="200" y2="38"/>
+      <circle class="pivot" cx="200" cy="168" r="6"/>
+    </svg>
+  </div>
+
+  <div class="readout">
+    <span class="big mono" id="rssiVal">--</span><span class="unit mono">dBm</span>
+    <div class="sub" id="distVal">waiting for a signal</div>
+  </div>
+
+  <div class="verdict" id="verdict">
+    <div class="word" id="verdictWord">Hold still</div>
+    <div class="why" id="verdictWhy">Building a baseline</div>
+  </div>
+
+  <canvas id="trace"></canvas>
+  <div class="trace-cap">
+    <span class="eyebrow">60 seconds ago</span>
+    <span class="eyebrow">now</span>
+  </div>
+
+  <div class="toggles">
+    <button id="btnSound" aria-pressed="true" class="quiet">Sound on</button>
+    <button id="btnBuzz" aria-pressed="true" class="quiet">Buzz on</button>
+  </div>
+
+  <button id="btnBack" class="quiet">Back to list</button>
+
+  <div class="note">
+    <b>How to use it.</b> Stand still for two seconds, then walk ten steps one way.
+    Faster clicks mean you're closer. If it slows down, turn around. Sweep low —
+    signal drops hard through furniture and bodies, so a weak reading often means
+    something is in the way rather than far off.
+  </div>
+</section>
+
+</main>
+
+<script>
+"use strict";
+
+/* ============================================================
+   State
+   ============================================================ */
+const S = {
+  scan: null,           // BluetoothLEScan handle
+  devices: new Map(),   // id -> {id,name,rssi,ema,txPower,last}
+  target: null,         // id being hunted
+  ema: null,            // smoothed rssi of target
+  history: [],          // {t, ema}
+  lastHeard: 0,
+  tickTimer: null,
+  audio: null,
+  sound: true,
+  buzz: true,
+  wakeLock: null,
+  watchAbort: null
+};
+
+const ALPHA = 0.25;          // EMA smoothing
+const TX_POWER = -59;        // assumed dBm at 1 metre
+const PATH_LOSS = 2.0;
+const RSSI_MIN = -100, RSSI_MAX = -35;
+const TREND_WINDOW = 2500;   // ms to look back for warmer/colder
+const TREND_DEADBAND = 1.5;  // dB
+
+const $ = id => document.getElementById(id);
+
+/* ============================================================
+   Support check
+   ============================================================ */
+async function checkSupport(){
+  const box = $("support");
+  const embedded = window.self !== window.top;
+
+  if(embedded){
+    box.innerHTML = "<b>This page is running inside another app's frame.</b> " +
+      "Chrome only hands Bluetooth to a page it loads directly, so scanning is blocked here. " +
+      "Save the file, put it on any https address, and open that address in Chrome on your phone.";
+    $("btnScan").disabled = true; $("btnPick").disabled = true;
+    return;
+  }
+  if(navigator.bluetooth && navigator.bluetooth.getAvailability){
+    try{
+      if(!(await navigator.bluetooth.getAvailability())){
+        box.innerHTML = "<b>No Bluetooth radio available.</b> Switch Bluetooth on in system settings, " +
+          "then reload. On Android, location permission also has to be granted to Chrome.";
+        $("btnScan").disabled = true; $("btnPick").disabled = true;
+        return;
+      }
+    }catch(e){}
+  }
+  if(!navigator.bluetooth){
+    box.innerHTML = "<b>Bluetooth isn't available here.</b> This needs Chrome on Android " +
+      "and a page served over https. A file opened straight from storage won't work.";
+    $("btnScan").disabled = true; $("btnPick").disabled = true;
+    return;
+  }
+  if(!navigator.bluetooth.requestLEScan){
+    box.innerHTML = "<b>Full scanning is switched off in this Chrome.</b> Turn it on at " +
+      "<code>chrome://flags/#enable-experimental-web-platform-features</code>, then restart Chrome. " +
+      "Until then, use <b>Pick one device</b> — it still gives live signal strength.";
+    $("btnScan").disabled = true;
+  } else {
+    box.innerHTML = "<b>Two ways in.</b> <i>Start scan</i> hears every advertisement in range. " +
+      "<i>Pick one device</i> uses Chrome's own picker and needs no flags — better if scanning is blocked.";
+  }
+}
+
+/* ============================================================
+   Scanning
+   ============================================================ */
+async function startScan(){
+  try{
+    setStatus("Scanning", true);
+    navigator.bluetooth.addEventListener("advertisementreceived", onAdvert);
+    S.scan = await navigator.bluetooth.requestLEScan({
+      acceptAllAdvertisements: true,
+      keepRepeatedDevices: true
+    });
+    $("btnScan").textContent = "Stop scan";
+    $("hint").textContent = "Listening. Devices sort by strength, strongest first.";
+  }catch(err){
+    setStatus("Idle", false);
+    $("hint").textContent = "Scan didn't start: " + err.message;
+  }
+}
+
+function stopScan(){
+  if(S.scan){ try{ S.scan.stop(); }catch(e){} S.scan = null; }
+  navigator.bluetooth.removeEventListener("advertisementreceived", onAdvert);
+  $("btnScan").textContent = "Start scan";
+  setStatus("Idle", false);
+}
+
+function onAdvert(e){
+  const id = e.device.id;
+  const rssi = e.rssi;
+  if(typeof rssi !== "number") return;
+
+  let d = S.devices.get(id);
+  if(!d){
+    d = { id, name: e.device.name || e.name || "", rssi, ema: rssi, txPower: null };
+    S.devices.set(id, d);
+  }
+  if(!d.name && (e.device.name || e.name)) d.name = e.device.name || e.name;
+  if(typeof e.txPower === "number") d.txPower = e.txPower;
+  d.rssi = rssi;
+  d.ema = d.ema == null ? rssi : d.ema + ALPHA * (rssi - d.ema);
+  d.last = Date.now();
+
+  if(S.target === id) feedTarget(d.rssi, d.txPower);
+  if($("viewList").classList.contains("active")) renderList();
+}
+
+/* Single-device fallback: Chrome's picker + watchAdvertisements */
+async function pickOne(){
+  try{
+    const device = await navigator.bluetooth.requestDevice({
+      acceptAllDevices: true, optionalServices: []
+    });
+    if(!device.watchAdvertisements){
+      $("hint").textContent = "This Chrome can't stream signal strength. Enable " +
+        "chrome://flags/#enable-experimental-web-platform-features and try again.";
+      return;
+    }
+    const rec = { id: device.id, name: device.name || "", rssi: null, ema: null, txPower: null, last: 0 };
+    S.devices.set(device.id, rec);
+
+    device.addEventListener("advertisementreceived", ev => {
+      if(typeof ev.rssi !== "number") return;
+      rec.rssi = ev.rssi;
+      rec.ema = rec.ema == null ? ev.rssi : rec.ema + ALPHA * (ev.rssi - rec.ema);
+      if(typeof ev.txPower === "number") rec.txPower = ev.txPower;
+      rec.last = Date.now();
+      if(S.target === device.id) feedTarget(rec.rssi, rec.txPower);
+      if($("viewList").classList.contains("active")) renderList();
+    });
+
+    S.watchAbort = new AbortController();
+    await device.watchAdvertisements({ signal: S.watchAbort.signal });
+    setStatus("Watching", true);
+    hunt(device.id);
+  }catch(err){
+    if(err.name !== "NotFoundError") $("hint").textContent = "Couldn't watch that device: " + err.message;
+  }
+}
+
+/* ============================================================
+   List rendering
+   ============================================================ */
+function renderList(){
+  const now = Date.now();
+  for(const [id,d] of S.devices) if(now - d.last > 12000 && id !== S.target) S.devices.delete(id);
+
+  const arr = [...S.devices.values()].filter(d => d.ema != null).sort((a,b) => b.ema - a.ema);
+  const ul = $("list");
+  $("empty").style.display = arr.length ? "none" : "block";
+
+  ul.innerHTML = arr.map(d => {
+    const lit = Math.max(0, Math.min(10, Math.round(pct(d.ema) * 10)));
+    const segs = Array.from({length:10}, (_,i) =>
+      `<span class="seg${i < lit ? " lit" : ""}"></span>`).join("");
+    const name = d.name
+      ? esc(d.name)
+      : `<span class="anon">Unnamed device</span>`;
+    return `<li data-id="${esc(d.id)}">
+      <div class="row-top">
+        <span class="dev-name">${name}</span>
+        <span class="dbm mono">${Math.round(d.ema)} dBm</span>
+      </div>
+      <div class="segs">${segs}</div>
+      <div class="row-meta">${roughDistance(d.ema, d.txPower)} away · ${esc(d.id).slice(0,8)}</div>
+    </li>`;
+  }).join("");
+}
+
+$("list").addEventListener("click", e => {
+  const li = e.target.closest("li");
+  if(li) hunt(li.dataset.id);
+});
+
+/* ============================================================
+   Hunt mode
+   ============================================================ */
+function hunt(id){
+  const d = S.devices.get(id);
+  if(!d) return;
+  S.target = id;
+  S.ema = d.ema;
+  S.history = [];
+  S.lastHeard = d.last || 0;
+
+  $("targetName").textContent = d.name || "Unnamed device";
+  swap("viewHunt");
+  startAudio();
+  requestWake();
+  scheduleTick();
+  drawTrace();
+}
+
+function leaveHunt(){
+  S.target = null;
+  stopTick();
+  releaseWake();
+  swap("viewList");
+  renderList();
+}
+
+function feedTarget(rssi, txPower){
+  S.ema = S.ema == null ? rssi : S.ema + ALPHA * (rssi - S.ema);
+  S.lastHeard = Date.now();
+  S.history.push({ t: S.lastHeard, ema: S.ema });
+  if(S.history.length > 400) S.history.shift();
+  paintHunt(txPower);
+}
+
+function paintHunt(txPower){
+  const v = S.ema;
+  const p = pct(v);
+
+  // needle: -90deg (far) .. +90deg (here)
+  $("needle").style.transform = `rotate(${(-90 + p * 180).toFixed(1)}deg)`;
+
+  // arc fill along a 160r semicircle
+  const arcLen = Math.PI * 160;
+  const arc = $("arcFill");
+  arc.style.strokeDasharray = arcLen;
+  arc.style.strokeDashoffset = arcLen * (1 - p);
+
+  $("glow").style.opacity = (p * p).toFixed(2);
+  $("rssiVal").textContent = Math.round(v);
+  $("distVal").textContent = "roughly " + roughDistance(v, txPower) + " away";
+
+  // warmer / colder from the slope of the smoothed line
+  const now = Date.now();
+  const past = S.history.find(h => now - h.t <= TREND_WINDOW);
+  const box = $("verdict"), word = $("verdictWord"), why = $("verdictWhy");
+  box.classList.remove("warmer","colder");
+
+  if(!past || S.history.length < 6){
+    word.textContent = "Hold still"; why.textContent = "Building a baseline";
+  } else {
+    const delta = S.ema - past.ema;
+    if(delta > TREND_DEADBAND){
+      box.classList.add("warmer");
+      word.textContent = "Warmer"; why.textContent = `Up ${delta.toFixed(1)} dB — keep going`;
+    } else if(delta < -TREND_DEADBAND){
+      box.classList.add("colder");
+      word.textContent = "Colder"; why.textContent = `Down ${Math.abs(delta).toFixed(1)} dB — turn around`;
+    } else {
+      word.textContent = "No change"; why.textContent = "Move further before deciding";
+    }
+  }
+  drawTrace();
+}
+
+/* ============================================================
+   Click track — pace carries the distance, not the screen
+   ============================================================ */
+function startAudio(){
+  if(!S.audio){
+    const C = window.AudioContext || window.webkitAudioContext;
+    if(C) S.audio = new C();
+  }
+  if(S.audio && S.audio.state === "suspended") S.audio.resume();
+}
+
+function click(strength){
+  if(S.sound && S.audio){
+    const t = S.audio.currentTime;
+    const osc = S.audio.createOscillator(), g = S.audio.createGain();
+    osc.type = "square";
+    osc.frequency.value = 620 + strength * 900;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.18, t + 0.004);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.05);
+    osc.connect(g).connect(S.audio.destination);
+    osc.start(t); osc.stop(t + 0.06);
+  }
+  if(S.buzz && navigator.vibrate) navigator.vibrate(14 + Math.round(strength * 22));
+}
+
+function scheduleTick(){
+  stopTick();
+  const step = () => {
+    if(S.target == null) return;
+    const stale = Date.now() - S.lastHeard > 8000;
+    const p = stale ? 0 : pct(S.ema);
+    if(stale){
+      $("verdictWord").textContent = "Lost it";
+      $("verdictWhy").textContent = "No advertisements for 8 seconds";
+      $("verdict").classList.remove("warmer","colder");
+    } else {
+      click(p);
+    }
+    const interval = 1250 - p * 1160;   // 1250ms far → 90ms close
+    S.tickTimer = setTimeout(step, Math.max(90, interval));
+  };
+  step();
+}
+function stopTick(){ if(S.tickTimer){ clearTimeout(S.tickTimer); S.tickTimer = null; } }
+
+/* ============================================================
+   Strip trace
+   ============================================================ */
+function drawTrace(){
+  const c = $("trace");
+  const dpr = window.devicePixelRatio || 1;
+  const w = c.clientWidth, h = c.clientHeight;
+  if(c.width !== w * dpr){ c.width = w * dpr; c.height = h * dpr; }
+  const g = c.getContext("2d");
+  g.setTransform(dpr,0,0,dpr,0,0);
+  g.clearRect(0,0,w,h);
+
+  const now = Date.now(), span = 60000;
+  const pts = S.history.filter(p => now - p.t <= span);
+  if(pts.length < 2) return;
+
+  g.strokeStyle = "#2C3340"; g.lineWidth = 1;
+  for(let i = 1; i < 4; i++){
+    const y = (h / 4) * i;
+    g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke();
+  }
+
+  g.beginPath();
+  pts.forEach((p, i) => {
+    const x = w - ((now - p.t) / span) * w;
+    const y = h - pct(p.ema) * (h - 8) - 4;
+    i ? g.lineTo(x, y) : g.moveTo(x, y);
+  });
+  g.strokeStyle = "#F0A639"; g.lineWidth = 2;
+  g.lineJoin = "round"; g.lineCap = "round";
+  g.stroke();
+}
+
+/* ============================================================
+   Helpers
+   ============================================================ */
+function pct(rssi){
+  return Math.max(0, Math.min(1, (rssi - RSSI_MIN) / (RSSI_MAX - RSSI_MIN)));
+}
+function roughDistance(rssi, txPower){
+  const tx = (typeof txPower === "number") ? txPower : TX_POWER;
+  const m = Math.pow(10, (tx - rssi) / (10 * PATH_LOSS));
+  if(m < 0.6) return "arm's length";
+  if(m < 1.5) return "about a metre";
+  if(m < 25) return `about ${m.toFixed(m < 10 ? 1 : 0)} m`;
+  return "25 m or more";
+}
+function esc(s){ return String(s).replace(/[&<>"']/g, c =>
+  ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
+function swap(id){
+  document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
+  $(id).classList.add("active");
+  window.scrollTo(0,0);
+}
+function setStatus(text, on){
+  $("statusText").textContent = text;
+  $("lamp").classList.toggle("on", !!on);
+}
+async function requestWake(){
+  try{ if("wakeLock" in navigator) S.wakeLock = await navigator.wakeLock.request("screen"); }catch(e){}
+}
+function releaseWake(){ if(S.wakeLock){ S.wakeLock.release().catch(()=>{}); S.wakeLock = null; } }
+
+/* ============================================================
+   Wiring
+   ============================================================ */
+$("btnScan").addEventListener("click", () => S.scan ? stopScan() : startScan());
+$("btnPick").addEventListener("click", pickOne);
+$("btnBack").addEventListener("click", leaveHunt);
+
+$("btnSound").addEventListener("click", e => {
+  S.sound = !S.sound;
+  e.currentTarget.setAttribute("aria-pressed", String(S.sound));
+  e.currentTarget.textContent = S.sound ? "Sound on" : "Sound off";
+  if(S.sound) startAudio();
+});
+$("btnBuzz").addEventListener("click", e => {
+  S.buzz = !S.buzz;
+  e.currentTarget.setAttribute("aria-pressed", String(S.buzz));
+  e.currentTarget.textContent = S.buzz ? "Buzz on" : "Buzz off";
+});
+
+document.addEventListener("visibilitychange", () => {
+  if(document.hidden) stopTick();
+  else if(S.target != null){ scheduleTick(); requestWake(); }
+});
+window.addEventListener("resize", drawTrace);
+
+// gauge ticks
+(function ticks(){
+  const g = $("ticks");
+  for(let i = 0; i <= 20; i++){
+    const major = i % 5 === 0;
+    const a = Math.PI * (1 - i / 20);
+    const r1 = major ? 132 : 140, r2 = 150;
+    const l = document.createElementNS("http://www.w3.org/2000/svg","line");
+    l.setAttribute("x1", 200 + Math.cos(a) * r1); l.setAttribute("y1", 168 - Math.sin(a) * r1);
+    l.setAttribute("x2", 200 + Math.cos(a) * r2); l.setAttribute("y2", 168 - Math.sin(a) * r2);
+    l.setAttribute("class", "tick" + (major ? " major" : ""));
+    g.appendChild(l);
+  }
+})();
+
+checkSupport();
+setInterval(() => { if($("viewList").classList.contains("active")) renderList(); }, 1500);
+</script>
+</body>
+</html>
