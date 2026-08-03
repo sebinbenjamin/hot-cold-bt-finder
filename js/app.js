@@ -19,7 +19,8 @@ const S = {
   filter: "",
   namedOnly: false,
   advCount: 0,
-  watchdog: null
+  watchdog: null,
+  scanLabel: "Start scan"   // restored by stopScan(); set by checkSupport()
 };
 
 const ALPHA = 0.25;          // EMA smoothing
@@ -28,50 +29,69 @@ const PATH_LOSS = 2.0;
 const RSSI_MIN = -100, RSSI_MAX = -35;
 const TREND_WINDOW = 2500;   // ms to look back for warmer/colder
 const TREND_DEADBAND = 1.5;  // dB
+const SCAN_PERMISSION_TIMEOUT = 20000; // ms to wait for requestLEScan() to settle
 
 const $ = id => document.getElementById(id);
+
+/* Chrome exposes requestLEScan behind the experimental flag on every platform, but only
+   ChromeOS and Android actually implement scanning. On Windows the backend still rides on
+   Windows 8 APIs that have no scan support, so the call prompts for permission and then
+   never settles. Detect the platform so the copy can say that instead of hanging silently. */
+function platformName(){
+  const p = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "";
+  const ua = navigator.userAgent || "";
+  if(/android/i.test(ua)) return "android";
+  if(/cros|chrome ?os/i.test(p + ua)) return "chromeos";
+  if(/win/i.test(p)) return "windows";
+  if(/mac/i.test(p)) return "mac";
+  if(/linux/i.test(p)) return "linux";
+  return "other";
+}
+function scanningActuallyWorks(){
+  const p = platformName();
+  return p === "android" || p === "chromeos";
+}
 
 /* ============================================================
    Support check
    ============================================================ */
 async function checkSupport(){
   const box = $("support");
-  const embedded = window.self !== window.top;
 
-  if(embedded){
-    box.innerHTML = "<b>This page is running inside another app's frame.</b> " +
-      "Chrome only hands Bluetooth to a page it loads directly, so scanning is blocked here. " +
-      "Save the file, put it on any https address, and open that address in Chrome on your phone.";
+  const blocked = msg => {
+    box.textContent = msg;
     $("btnScan").disabled = true; $("btnPick").disabled = true;
+  };
+
+  if(window.self !== window.top){
+    blocked("Open this page directly in Chrome. Bluetooth is blocked inside other apps.");
     return;
   }
-  if(navigator.bluetooth && navigator.bluetooth.getAvailability){
+  if(!navigator.bluetooth){
+    blocked("This browser can't do Bluetooth. Use Chrome, over https.");
+    return;
+  }
+  if(navigator.bluetooth.getAvailability){
     try{
       if(!(await navigator.bluetooth.getAvailability())){
-        box.innerHTML = "<b>No Bluetooth radio available.</b> Switch Bluetooth on in system settings, " +
-          "then reload. On Android, location permission also has to be granted to Chrome.";
-        $("btnScan").disabled = true; $("btnPick").disabled = true;
+        blocked("Bluetooth is off. Switch it on and reload.");
         return;
       }
     }catch(e){}
   }
-  if(!navigator.bluetooth){
-    box.innerHTML = "<b>Bluetooth isn't available here.</b> This needs Chrome on Android " +
-      "and a page served over https. A file opened straight from storage won't work.";
-    $("btnScan").disabled = true; $("btnPick").disabled = true;
-    return;
-  }
+
   if(!navigator.bluetooth.requestLEScan){
-    box.innerHTML = "<b>Full scanning isn't available here.</b> This browser build can't start Bluetooth LE scans. " +
-      "Use <b>Add a device by hand</b> to watch a specific device instead.";
-    $("btnScan").disabled = false;
-    $("btnScan").textContent = "Use picker instead";
+    S.scanLabel = "Use picker instead";
+    box.textContent = "Scanning isn't available here — add a device by hand instead.";
+  } else if(!scanningActuallyWorks()){
+    S.scanLabel = "Start scan";
+    box.textContent = "Scanning only works on Android. Here, add a device by hand.";
   } else {
-    box.innerHTML = "<b>Two ways in.</b> <i>Start scan</i> hears every advertisement in range. " +
-      "<i>Add a device by hand</i> uses Chrome's own picker and needs no flags — better if scanning is blocked.";
-    $("btnScan").disabled = false;
-    $("btnScan").textContent = "Start scan";
+    S.scanLabel = "Start scan";
+    box.textContent = "Scan hears everything nearby. Add by hand picks one device.";
   }
+  $("btnScan").disabled = false;
+  $("btnScan").textContent = S.scanLabel;
 }
 
 /* ============================================================
@@ -83,57 +103,63 @@ async function startScan(){
     return;
   }
   if(!navigator.bluetooth.requestLEScan){
-    $("hint").textContent = "This browser doesn't support full Bluetooth scanning. Using the manual picker instead.";
-    diag("Falling back to picker");
     await pickOne();
     return;
   }
 
   try{
     S.advCount = 0;
-    diag("Requesting scan permission…");
+    $("hint").textContent = "Waiting for permission…";
     setStatus("Scanning", true);
     navigator.bluetooth.addEventListener("advertisementreceived", onAdvert);
-    S.scan = await navigator.bluetooth.requestLEScan({
+    // requestLEScan() can hang indefinitely on desktop Chrome (Windows/macOS/Linux) even after
+    // the user grants permission — the API is only solid on ChromeOS/Android. Race it against a
+    // timeout so the UI never gets stuck on "Requesting scan permission…" forever.
+    const pending = navigator.bluetooth.requestLEScan({
       acceptAllAdvertisements: true,
       keepRepeatedDevices: true
     });
+    // If the timeout wins, the scan may still start later with nobody holding the handle.
+    // Stop it on arrival so it can't keep the radio busy invisibly.
+    pending.then(scan => { if(S.scan !== scan){ try{ scan.stop(); }catch(e){} } }, () => {});
+    S.scan = await Promise.race([
+      pending,
+      new Promise((_, reject) =>
+        setTimeout(() => reject({ name: "PermissionTimeout" }), SCAN_PERMISSION_TIMEOUT))
+    ]);
     $("btnScan").textContent = "Stop scan";
-    $("hint").textContent = "Listening. Devices sort by strength, strongest first.";
-    diag("Scan running · 0 advertisements");
+    $("hint").textContent = "Listening. Strongest first.";
 
-    // If the radio is scanning but nothing arrives, it's almost always location permission.
+    // Scan handle in hand but no adverts: on Android that's the Location permission, on
+    // desktop it's the platform gap that no setting can fix.
     clearTimeout(S.watchdog);
     S.watchdog = setTimeout(() => {
       if(S.scan && S.advCount === 0){
-        $("hint").innerHTML = "<b>Scan started but nothing is coming through.</b> " +
-          "Android hides Bluetooth advertisements from Chrome unless Chrome has Location " +
-          "permission. Open Android Settings → Apps → Chrome → Permissions → Location → " +
-          "Allow, make sure Location itself is switched on, then reload and scan again.";
+        $("hint").textContent = scanningActuallyWorks()
+          ? "Nothing coming through. Give Chrome Location permission in Android settings, then scan again."
+          : "Nothing coming through. Add a device by hand instead.";
       }
     }, 7000);
 
   }catch(err){
     stopScan();
     const map = {
-      NotAllowedError: "Permission was refused. Tap Start scan and choose Allow on the prompt.",
-      NotSupportedError: "This Chrome build can't scan. Enable chrome://flags/#enable-experimental-web-platform-features and restart Chrome.",
-      NotFoundError: "No Bluetooth adapter found. Switch Bluetooth on and reload.",
-      InvalidStateError: "A scan is already running in another tab. Close it and try again.",
-      SecurityError: "Blocked by the page's permissions policy — open this file as a top-level page in Chrome, not inside another app."
+      NotAllowedError: "Permission refused. Tap Start scan and choose Allow.",
+      NotSupportedError: "This Chrome build can't scan. Add a device by hand instead.",
+      NotFoundError: "No Bluetooth adapter. Switch Bluetooth on and reload.",
+      InvalidStateError: "A scan is already running in another tab.",
+      SecurityError: "Blocked. Open this page directly in Chrome.",
+      PermissionTimeout: "The scan never started. Add a device by hand instead."
     };
-    $("hint").textContent = map[err.name] || (err.name + ": " + err.message);
-    diag("Scan failed · " + err.name);
+    $("hint").textContent = map[err.name] || "Couldn't start the scan.";
   }
 }
-
-function diag(t){ $("diag").textContent = t; }
 
 function stopScan(){
   clearTimeout(S.watchdog);
   if(S.scan){ try{ S.scan.stop(); }catch(e){} S.scan = null; }
   navigator.bluetooth.removeEventListener("advertisementreceived", onAdvert);
-  $("btnScan").textContent = "Start scan";
+  $("btnScan").textContent = S.scanLabel;
   setStatus("Idle", false);
 }
 
@@ -143,7 +169,6 @@ function onAdvert(e){
   if(typeof rssi !== "number") return;
 
   S.advCount++;
-  if(S.scan && S.advCount % 5 === 1) diag(`Scan running · ${S.advCount} advertisements`);
 
   let d = S.devices.get(id);
   if(!d){
@@ -168,12 +193,11 @@ async function pickOne(){
     });
 
     if(S.watched.has(device.id)){
-      $("hint").textContent = "That one's already on the list.";
+      $("hint").textContent = "Already on the list.";
       return;
     }
     if(!device.watchAdvertisements){
-      $("hint").textContent = "This Chrome can't stream signal strength. Enable " +
-        "chrome://flags/#enable-experimental-web-platform-features and try again.";
+      $("hint").textContent = "This Chrome can't read signal strength.";
       return;
     }
 
@@ -197,12 +221,10 @@ async function pickOne(){
 
     await device.watchAdvertisements();
     setStatus(`Watching ${S.watched.size}`, true);
-    $("hint").textContent = S.watched.size === 1
-      ? "Added. Add more devices, or tap one to start hunting it."
-      : `Watching ${S.watched.size} devices. Tap one to start hunting it.`;
+    $("hint").textContent = "Tap a device to start hunting it.";
   }catch(err){
     if(err.name === "NotFoundError") return;          // user dismissed the picker
-    $("hint").textContent = "Couldn't watch that device: " + err.message;
+    $("hint").textContent = "Couldn't watch that device.";
   }
 }
 
@@ -235,8 +257,8 @@ function renderList(){
   const ul = $("list");
   $("empty").style.display = shown.length ? "none" : "block";
   $("empty").textContent = arr.length
-    ? "No device matches that filter."
-    : "Nothing on the list yet. Scan, or add a device by hand.";
+    ? "Nothing matches that filter."
+    : "Nothing yet.";
 
   ul.innerHTML = shown.map(d => {
     const silent = d.ema == null || now - d.last > 12000;
@@ -246,7 +268,7 @@ function renderList(){
     const name = d.name ? esc(d.name) : `<span class="anon">Unnamed device</span>`;
     const dbm  = silent ? "—" : `${Math.round(d.ema)} dBm`;
     const meta = d.ema == null
-      ? "waiting for first signal"
+      ? "waiting for signal"
       : silent ? "gone quiet" : `${roughDistance(d.ema, d.txPower)} away`;
     return `<li data-id="${esc(d.id)}">
       <div class="row-top">
@@ -254,7 +276,7 @@ function renderList(){
         <span class="dbm mono">${dbm}</span>
       </div>
       <div class="segs">${segs}</div>
-      <div class="row-meta">${meta} · ${esc(d.id).slice(0,10)}</div>
+      <div class="row-meta">${meta}</div>
     </li>`;
   }).join("");
 }
@@ -276,11 +298,23 @@ function hunt(id){
   S.lastHeard = d.last || 0;
 
   $("targetName").textContent = d.name || "Unnamed device";
+  if(d.ema == null) resetGauge();else paintHunt(d.txPower);
   swap("viewHunt");
   startAudio();
   requestWake();
   scheduleTick();
   drawTrace();
+}
+
+/* Park the gauge at empty until the first reading, so it can't read as full signal. */
+function resetGauge(){
+  const arcLen = Math.PI * 160;
+  $("needle").style.transform = "rotate(-90deg)";
+  $("arcFill").style.strokeDasharray = arcLen;
+  $("arcFill").style.strokeDashoffset = arcLen;
+  $("glow").style.opacity = 0;
+  $("rssiVal").textContent = "--";
+  $("distVal").textContent = "waiting for a signal";
 }
 
 function leaveHunt(){
@@ -373,7 +407,7 @@ function scheduleTick(){
     const p = stale ? 0 : pct(S.ema);
     if(stale){
       $("verdictWord").textContent = "Lost it";
-      $("verdictWhy").textContent = "No advertisements for 8 seconds";
+      $("verdictWhy").textContent = "No signal for 8 seconds";
       $("verdict").classList.remove("warmer","colder");
     } else {
       click(p);

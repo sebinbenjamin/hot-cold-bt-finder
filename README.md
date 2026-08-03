@@ -18,6 +18,8 @@ hot-cold-bt-finder is a small single-page web app that helps you locate nearby B
 
 For the best experience, use Chrome on Android. Full scanning may require enabling experimental Web Platform features in Chrome.
 
+**Scanning is Android/ChromeOS only.** On Windows, macOS, and Linux, Chrome exposes the scanning API but never actually delivers advertisements — the permission prompt appears, you allow it, and nothing happens. This is a Chrome limitation, not a setting you can change. On desktop, use **Add a device by hand**, which uses Chrome's own device picker and works everywhere.
+
 ## Run locally
 
 From the project folder, start a simple local server:

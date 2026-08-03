@@ -24,13 +24,15 @@ Then open `http://localhost:8000/`. Do not test from `file://` or in an iframe: 
 
 Verification is manual and needs real hardware: Chrome on Android with Bluetooth and Location permission granted. `requestLEScan` is behind `chrome://flags/#enable-experimental-web-platform-features`; the picker path is not. Desktop Chrome can exercise the picker path and the UI, but not full scanning.
 
+**Full scanning only works on Android and ChromeOS.** On Windows (and macOS/Linux) desktop Chrome, enabling the flag exposes `requestLEScan` but the backend never delivers: the permission prompt appears, the user allows it, and the promise never settles — Chromium's Windows Web Bluetooth backend rides on Windows 8 APIs that have no scanning support. Confirmed by running Google's own [scanning sample](https://googlechrome.github.io/samples/web-bluetooth/scan.html), which hangs identically on the same machine. Don't chase this as an app bug; `scanningActuallyWorks()` gates the user-facing copy on it.
+
 ## Architecture
 
 `js/app.js` is a classic (non-module) script loaded with `defer`: top-level function declarations, event wiring at the bottom, and a single mutable `S` state object. Only Google Fonts is external. The `defer` on the `<script>` tag matters — the wiring code runs at top level (not inside a `DOMContentLoaded` handler), so it depends on the DOM already being parsed when it executes.
 
 **Two acquisition paths, one device map.** Both write records into `S.devices` (`id -> {id, name, rssi, ema, txPower, last, pinned?}`):
 
-- `startScan()` → `navigator.bluetooth.requestLEScan()` with a *global* `advertisementreceived` listener on `navigator.bluetooth` (`onAdvert`). Flag-gated; a watchdog after 7s blames Android Location permission when the scan runs but no adverts arrive.
+- `startScan()` → `navigator.bluetooth.requestLEScan()` with a *global* `advertisementreceived` listener on `navigator.bluetooth` (`onAdvert`). Flag-gated; guarded by two watchdogs: `SCAN_PERMISSION_TIMEOUT` (20s) races the `requestLEScan()` call itself, since that promise can hang indefinitely on desktop Chrome (Windows/macOS/Linux) even after the user grants permission — the API is only reliable on ChromeOS/Android; a second watchdog at 7s after the scan actually starts blames Android Location permission when the scan runs but no adverts arrive.
 - `pickOne()` → `requestDevice()` + `device.watchAdvertisements()` with a *per-device* listener. These records are `pinned: true`. This is the fallback when `requestLEScan` is missing — `checkSupport()` rewrites the scan button to route there.
 
 Each path independently updates its record's EMA and, if that record is the current target, calls `feedTarget()`. Changes to signal handling usually need to be made in **both** listeners.

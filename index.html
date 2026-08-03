@@ -22,14 +22,12 @@
 
 <!-- ============ VIEW: LIST ============ -->
 <section class="view active" id="viewList">
-  <p class="hint" id="hint">Scan picks up anything broadcasting nearby. Tap a device to start hunting it.</p>
+  <p class="hint" id="hint">Tap a device to start hunting it.</p>
 
   <div class="btn-row">
     <button id="btnScan">Start scan</button>
     <button id="btnPick" class="quiet">Add a device by hand</button>
   </div>
-
-  <div class="eyebrow" id="diag"></div>
 
   <div class="filter">
     <input id="q" type="search" inputmode="search" autocomplete="off"
@@ -39,7 +37,7 @@
   <div class="eyebrow count" id="count"></div>
 
   <ul id="list"></ul>
-  <div class="empty" id="empty">Nothing on the list yet. Scan, or add a device by hand.</div>
+  <div class="empty" id="empty">Nothing yet.</div>
 
   <div class="note" id="support"></div>
 </section>
@@ -88,10 +86,8 @@
   <button id="btnBack" class="quiet">Back to list</button>
 
   <div class="note">
-    <b>How to use it.</b> Stand still for two seconds, then walk ten steps one way.
-    Faster clicks mean you're closer. If it slows down, turn around. Sweep low —
-    signal drops hard through furniture and bodies, so a weak reading often means
-    something is in the way rather than far off.
+    Stand still, then walk ten steps one way. Faster clicks mean closer.
+    If it slows, turn around.
   </div>
 </section>
 
